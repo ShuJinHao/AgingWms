@@ -1,11 +1,11 @@
-﻿using AgingWms.Infrastructure.Data;
+﻿using AgingWms.Core.Domain;
+using AgingWms.Infrastructure.Data;
 using AgingWms.Infrastructure.Repositories;
 using AgingWms.UseCases.Consumers.Wms.Commands;
 using AgingWms.UseCases.Consumers.Wms.Queries;
 using AgingWms.UseCases.Mappings;
 using AgingWms.UseCases.Services;
-using AgingWms.Workflow.Activities;
-using AgingWms.Workflow.Consumers;
+using AgingWms.Workflow.Consumers; // 确保引用了这个
 using AgingWms.Workflow.Services;
 using AgingWms.Workflow.Workflows;
 using MassTransit;
@@ -23,69 +23,59 @@ namespace AgingWms.Client
         {
             var connectionString = configuration.GetConnectionString("DefaultConnection");
 
-            // 1. 数据库与上下文
+            // 1. 数据库
             services.AddDbContextPool<AgingWmsDbContext>(options => options.UseSqlServer(connectionString));
             services.AddScoped<DbContext>(provider => provider.GetRequiredService<AgingWmsDbContext>());
 
-            // 2. 仓储注册
+            // 2. 仓储
             services.AddScoped(typeof(IReadRepository<>), typeof(EfReadRepository<>));
             services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
             services.AddScoped(typeof(IGenericRepository<>), typeof(EfGenericRepository<>));
 
-            // 3. 业务服务注册
+            // 3. 业务服务 (确保 SlotCommandService 在这里!)
+            services.AddScoped<ResourceControlService<WarehouseSlot>>();
+            services.AddScoped<ResourceControlService<BatteryCell>>();
+
+            // 【关键】注册 SlotCommandService
             services.AddScoped<SlotCommandService>();
+
             services.AddScoped<AgingJobService>();
-            // 【注意】这里注册了工作流，它依赖 IEndpointNameFormatter
             services.AddScoped<AgingProcessWorkflow>();
 
-            // 4. UI 实时监控服务 (必须单例)
+            // 4. UI 监控
             services.AddSingleton<RealTimeMonitorService>();
             services.AddMemoryCache();
 
-            // 5. AutoMapper
+            // 5. Mapper
             services.AddAutoMapper(cfg => cfg.AddProfile<AgingWmsMappingProfile>());
 
-            // 6. MassTransit 完整配置
+            // 6. MassTransit
             services.AddMassTransit(x =>
             {
-                // =================================================================
-                // 【修复点 1：必须加】注册 EndpointNameFormatter
-                // 你的 Workflow 类构造函数里要了这个，不加这行，消费者直接创建失败！
-                // =================================================================
                 x.SetKebabCaseEndpointNameFormatter();
 
-                // 注册消费者
+                // 消费者
                 x.AddConsumer<SlotCommandConsumer>();
                 x.AddConsumer<SlotQueryConsumer>();
-                x.AddConsumer<AgingJobConsumer>();      // 核心任务消费者
-                x.AddConsumer<DashboardConsumer>();     // UI 看板消费者
+                x.AddConsumer<AgingJobConsumer>();
+                x.AddConsumer<DashboardConsumer>(); // 如果没有这个类先注释掉
 
-                // 注册所有 Activities
-                x.AddActivitiesFromNamespaceContaining<RestActivity>();
+                // 自动寻找 Activity
+                // 确保你的项目中引用了包含 RestActivity 的命名空间，如果报错找不到类，请改为 x.AddActivitiesFromNamespaceContaining<AgingWms.Workflow.Activities.RestActivity>();
+                x.AddActivitiesFromNamespaceContaining<AgingWms.Workflow.Activities.RestActivity>();
 
-                // 注册请求客户端
-                x.AddRequestClient<SharedKernel.Contracts.SaveSlotData>();
-                x.AddRequestClient<SharedKernel.Contracts.RelocateSlot>();
-                x.AddRequestClient<SharedKernel.Contracts.ClearSlot>();
-                x.AddRequestClient<SharedKernel.Contracts.GetSlotQuery>();
-
+                // 请求客户端配置
                 x.UsingInMemory((context, cfg) =>
                 {
-                    // =================================================================
-                    // 【修复点 2：必须加】 强制使用 Newtonsoft.Json
-                    // 解决 JObject/JToken 报错，必须放在 ConfigureEndpoints 之前！
-                    // =================================================================
                     cfg.UseNewtonsoftJsonSerializer();
                     cfg.UseNewtonsoftJsonDeserializer();
-
-                    // 重试策略
-                    cfg.UseMessageRetry(r => r.Interval(5, TimeSpan.FromMilliseconds(100)));
-                    cfg.UseConcurrencyLimit(10);
-
-                    // 自动配置所有断点
                     cfg.ConfigureEndpoints(context);
                 });
             });
+
+            // 7. 【关键修复】MainWindow 注册为 Singleton
+            // 我们将在 MainWindow 里注入 IBus 来规避作用域问题
+            services.AddSingleton<MainWindow>();
 
             return services;
         }

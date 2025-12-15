@@ -2,18 +2,17 @@
 using AgingWms.Workflow.Workflows;
 using AutoMapper;
 using MassTransit;
-using Microsoft.Extensions.Caching.Memory; // 引用缓存
+using Microsoft.Extensions.Caching.Memory;
 using SharedKernel.Repositoy;
 using SharedKernel.Workflow.Contracts;
 using SharedKernel.Workflow.Workflows;
+using SharedKernel.Contracts;
+using SharedKernel.Dto; // OperationResult
 using System;
 using System.Threading.Tasks;
 
 namespace AgingWms.Workflow.Consumers
 {
-    // =================================================================
-    // 【完整版】老化任务全能消费者 (带缓存同步)
-    // =================================================================
     public class AgingJobConsumer :
         IConsumer<StartAgingJob>,
         IConsumer<PauseAgingJob>,
@@ -23,7 +22,7 @@ namespace AgingWms.Workflow.Consumers
         private readonly AgingProcessWorkflow _workflowBuilder;
         private readonly IMapper _mapper;
         private readonly IRepository<WarehouseSlot> _repository;
-        private readonly IMemoryCache _cache; // 注入缓存
+        private readonly IMemoryCache _cache;
 
         public AgingJobConsumer(
             AgingProcessWorkflow workflowBuilder,
@@ -37,119 +36,185 @@ namespace AgingWms.Workflow.Consumers
             _cache = cache;
         }
 
-        // --- 辅助方法：统一更新缓存 ---
-        // 只要调用这个，Activity 下次循环读到的就是最新状态，没有任何延迟
         private void UpdateCache(string slotId, SlotStatus status)
         {
-            // Set 会直接覆盖旧值
             _cache.Set($"SlotStatus_{slotId}", status, TimeSpan.FromHours(1));
         }
 
-        // =============================================================
-        // 1. 启动任务 (Start)
-        // =============================================================
+        // 1. 启动任务
         public async Task Consume(ConsumeContext<StartAgingJob> context)
         {
             var msg = context.Message;
-            Console.WriteLine($"[JobConsumer] 收到启动指令 -> 检查库位: {msg.SlotId} ...");
-
-            // --- 安全门禁检测 ---
             var slot = await _repository.GetByIdAsync(msg.SlotId);
 
             if (slot == null)
             {
-                Console.WriteLine($"[JobConsumer] 拒绝启动: 库位 {msg.SlotId} 不存在！");
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = $"库位 {msg.SlotId} 不存在" });
                 return;
             }
             if (string.IsNullOrEmpty(slot.TrayBarcode))
             {
-                Console.WriteLine($"[JobConsumer] 拒绝启动: 库位 {msg.SlotId} 无托盘！");
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = "库位无托盘" });
                 return;
             }
-            // 防止重复启动 (根据业务逻辑，非 Empty/Occupied 不让启动)
             if (slot.Status != SlotStatus.Empty && slot.Status != SlotStatus.Occupied)
             {
-                Console.WriteLine($"[JobConsumer] 拒绝启动: 库位状态为 {slot.Status}，不是空闲状态！");
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = $"状态 {slot.Status} 不允许启动" });
                 return;
             }
 
-            // --- 更新数据库 ---
-            slot.Status = SlotStatus.Occupied;
-            _repository.Update(slot);
-            await _repository.SaveChangesAsync();
+            try
+            {
+                slot.UpdateStatus(SlotStatus.Running);
+                _repository.Update(slot);
+                await _repository.SaveChangesAsync();
+                UpdateCache(slot.Id, slot.Status);
 
-            // --- 【关键】同步更新缓存 ---
-            UpdateCache(slot.SlotId, slot.Status);
+                var request = _mapper.Map<AgingJobRequest>(msg);
+                string trackingId = await _workflowBuilder.RunAsync(request);
 
-            // --- 启动工作流 ---
-            var request = _mapper.Map<AgingJobRequest>(msg);
-            string trackingId = await _workflowBuilder.RunAsync(request);
+                Console.WriteLine($"[JobConsumer] 启动成功: {trackingId}");
 
-            Console.WriteLine($"[JobConsumer] 工作流已启动 -> TrackingID: {trackingId}");
+                // 通知 UI 更新状态
+                await context.Publish<SlotStepStateEvent>(new
+                {
+                    SlotId = slot.Id,
+                    StepName = "准备中",
+                    EventType = StepEventType.Started,
+                    Message = "启动成功",
+                    ProgressPercent = 0.0,
+                    Timestamp = DateTime.Now
+                });
+
+                // 回应 Service
+                await context.RespondAsync(new OperationResult { IsSuccess = true, Message = "启动成功" });
+            }
+            catch (Exception ex)
+            {
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = ex.Message });
+            }
         }
 
-        // =============================================================
-        // 2. 暂停任务 (Pause)
-        // =============================================================
+        // 2. 暂停任务
         public async Task Consume(ConsumeContext<PauseAgingJob> context)
         {
             var slot = await _repository.GetByIdAsync(context.Message.SlotId);
 
-            // 只有在运行/占用状态下才能暂停
-            if (slot != null && (slot.Status == SlotStatus.Occupied || slot.Status == SlotStatus.Running))
+            if (slot == null)
             {
-                // 1. 改库
-                slot.Status = SlotStatus.Paused;
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = "库位不存在" });
+                return;
+            }
+
+            // 只有 占用(Occupied) 或 运行(Running) 才能暂停
+            if (slot.Status != SlotStatus.Occupied && slot.Status != SlotStatus.Running)
+            {
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = $"当前状态 {slot.Status} 无法暂停" });
+                return;
+            }
+
+            try
+            {
+                slot.UpdateStatus(SlotStatus.Paused);
                 _repository.Update(slot);
                 await _repository.SaveChangesAsync();
+                UpdateCache(slot.Id, slot.Status);
 
-                // 2. 改缓存 (Activity 会立马读到这个 Paused)
-                UpdateCache(slot.SlotId, slot.Status);
+                // 通知 UI
+                await context.Publish<SlotStepStateEvent>(new
+                {
+                    SlotId = slot.Id,
+                    StepName = "暂停",
+                    EventType = StepEventType.Paused,
+                    Message = "人工暂停",
+                    ProgressPercent = 0.0,
+                    Timestamp = DateTime.Now
+                });
 
-                Console.WriteLine($"[JobConsumer] 库位 {slot.SlotId} 已暂停 (Cache Updated)");
+                // 回应 Service
+                await context.RespondAsync(new OperationResult { IsSuccess = true, Message = "暂停成功" });
+            }
+            catch (Exception ex)
+            {
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = ex.Message });
             }
         }
 
-        // =============================================================
-        // 3. 恢复任务 (Resume)
-        // =============================================================
+        // 3. 恢复任务
         public async Task Consume(ConsumeContext<ResumeAgingJob> context)
         {
             var slot = await _repository.GetByIdAsync(context.Message.SlotId);
 
-            // 只有在暂停状态下才能恢复
-            if (slot != null && slot.Status == SlotStatus.Paused)
+            if (slot == null)
             {
-                // 1. 改库
-                slot.Status = SlotStatus.Occupied; // 恢复为正常状态
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = "库位不存在" });
+                return;
+            }
+
+            if (slot.Status != SlotStatus.Paused)
+            {
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = $"当前状态 {slot.Status} 无法恢复" });
+                return;
+            }
+
+            try
+            {
+                slot.UpdateStatus(SlotStatus.Running);
                 _repository.Update(slot);
                 await _repository.SaveChangesAsync();
+                UpdateCache(slot.Id, slot.Status);
 
-                // 2. 改缓存 (Activity 会立马读到这个 Occupied，跳出等待循环)
-                UpdateCache(slot.SlotId, slot.Status);
+                await context.Publish<SlotStepStateEvent>(new
+                {
+                    SlotId = slot.Id,
+                    StepName = "恢复",
+                    EventType = StepEventType.Resumed,
+                    Message = "任务已恢复",
+                    ProgressPercent = 0.0,
+                    Timestamp = DateTime.Now
+                });
 
-                Console.WriteLine($"[JobConsumer] 库位 {slot.SlotId} 已恢复运行 (Cache Updated)");
+                await context.RespondAsync(new OperationResult { IsSuccess = true, Message = "恢复成功" });
+            }
+            catch (Exception ex)
+            {
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = ex.Message });
             }
         }
 
-        // =============================================================
-        // 4. 停止任务 (Stop)
-        // =============================================================
+        // 4. 停止任务
         public async Task Consume(ConsumeContext<StopAgingJob> context)
         {
             var slot = await _repository.GetByIdAsync(context.Message.SlotId);
 
-            if (slot != null)
+            if (slot == null)
             {
-                // 1. 改库
-                slot.Status = SlotStatus.Error; // 标记为错误/停止
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = "库位不存在" });
+                return;
+            }
+
+            try
+            {
+                slot.UpdateStatus(SlotStatus.Error);
                 _repository.Update(slot);
                 await _repository.SaveChangesAsync();
+                UpdateCache(slot.Id, slot.Status);
 
-                // 2. 改缓存 (Activity 读到这个状态会直接抛异常退出)
-                UpdateCache(slot.SlotId, slot.Status);
+                await context.Publish<SlotStepStateEvent>(new
+                {
+                    SlotId = slot.Id,
+                    StepName = "停止",
+                    EventType = StepEventType.Faulted,
+                    Message = $"强制停止: {context.Message.Reason}",
+                    ProgressPercent = 0.0,
+                    Timestamp = DateTime.Now
+                });
 
-                Console.WriteLine($"[JobConsumer] 库位 {slot.SlotId} 已强制停止 (原因: {context.Message.Reason})");
+                await context.RespondAsync(new OperationResult { IsSuccess = true, Message = "停止成功" });
+            }
+            catch (Exception ex)
+            {
+                await context.RespondAsync(new OperationResult { IsSuccess = false, Message = ex.Message });
             }
         }
     }

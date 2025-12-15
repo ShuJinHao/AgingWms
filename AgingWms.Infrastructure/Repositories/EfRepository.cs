@@ -3,7 +3,9 @@ using SharedKernel.Domain;
 using SharedKernel.Repositoy;
 using System;
 using System.Collections.Generic;
-using System.Text;
+using System.Linq; // 用于 Chunk
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace AgingWms.Infrastructure.Repositories
 {
@@ -14,6 +16,7 @@ namespace AgingWms.Infrastructure.Repositories
         {
         }
 
+        // --- 同步实现 (保留) ---
         public T Add(T entity)
         {
             _dbSet.Add(entity);
@@ -31,6 +34,33 @@ namespace AgingWms.Infrastructure.Repositories
             _dbSet.Remove(entity);
         }
 
+        // --- 【关键修复】异步实现 ---
+
+        public async Task<T> AddAsync(T entity, CancellationToken cancellationToken = default)
+        {
+            await _dbSet.AddAsync(entity, cancellationToken);
+            // 自动保存，让 Service 层代码更简洁
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return entity;
+        }
+
+        public async Task UpdateAsync(T entity, CancellationToken cancellationToken = default)
+        {
+            // EF Core 内存操作
+            _dbContext.Entry(entity).State = EntityState.Modified;
+            _dbSet.Update(entity);
+            // 立即异步提交数据库
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        public async Task DeleteAsync(T entity, CancellationToken cancellationToken = default)
+        {
+            _dbSet.Remove(entity);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        // --- 其他原有方法 (保留) ---
+
         public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
         {
             return await _dbContext.SaveChangesAsync(cancellationToken);
@@ -41,7 +71,6 @@ namespace AgingWms.Infrastructure.Repositories
             return await SpecificationEvaluator.GetQuery(_dbSet, specification).ExecuteDeleteAsync(cancellationToken);
         }
 
-        // 你的批量替换逻辑
         public async Task ReplaceTableDataAsync(List<T> newData)
         {
             var strategy = _dbContext.Database.CreateExecutionStrategy();
@@ -52,10 +81,9 @@ namespace AgingWms.Infrastructure.Repositories
                 {
                     var entityType = _dbContext.Model.FindEntityType(typeof(T));
                     var tableName = entityType.GetTableName();
-                    // 这里注意 Schema 处理
                     var schema = entityType.GetSchema() ?? "dbo";
 
-                    // 1. 清空表 (SQL Server 语法)
+                    // 1. 清空表
                     await _dbContext.Database.ExecuteSqlRawAsync($"DELETE FROM [{schema}].[{tableName}]");
 
                     // 2. 分批插入

@@ -1,25 +1,25 @@
 ﻿using AgingWms.Core.Domain;
+using AgingWms.UseCases.Services;
 using AutoMapper;
 using MassTransit;
 using SharedKernel.Contracts;
 using SharedKernel.Dto;
-using SharedKernel.Repositoy;
 using System;
-using System.Collections.Generic;
-using System.Text;
+using System.Threading.Tasks;
 
 namespace AgingWms.UseCases.Consumers.Wms.Queries
 {
     public class SlotQueryConsumer : IConsumer<GetSlotQuery>
     {
-        // 注入只读仓储 (Read-Only Interface)
-        private readonly IReadRepository<WarehouseSlot> _readRepository;
+        // 【核心修改】注入 Service，而不是直接注入 Repository
+        // 保持架构一致性：Consumer -> Service -> Repository
+        private readonly SlotCommandService _service;
 
         private readonly IMapper _mapper;
 
-        public SlotQueryConsumer(IReadRepository<WarehouseSlot> readRepository, IMapper mapper)
+        public SlotQueryConsumer(SlotCommandService service, IMapper mapper)
         {
-            _readRepository = readRepository;
+            _service = service;
             _mapper = mapper;
         }
 
@@ -29,8 +29,9 @@ namespace AgingWms.UseCases.Consumers.Wms.Queries
             {
                 var query = context.Message;
 
-                // 1. 查询数据 (使用只读仓储)
-                var slotEntity = await _readRepository.GetByIdAsync(query.SlotId);
+                // 1. 调用 Service 获取实体
+                // (GetAsync 是 ResourceControlService 基类提供的方法)
+                var slotEntity = await _service.GetAsync(query.SlotId);
 
                 if (slotEntity == null)
                 {
@@ -45,10 +46,10 @@ namespace AgingWms.UseCases.Consumers.Wms.Queries
                 }
 
                 // 3. 找到数据：使用 AutoMapper 转换为 DTO
-                // 这一步会自动处理 WarehouseSlot -> WarehouseSlotDto 的深层映射
+                // Mapping 属于“接口适配”逻辑，放在 Consumer 层是正确的
                 var slotDto = _mapper.Map<WarehouseSlotDto>(slotEntity);
 
-                // 4. 返回成功结果 (DTO)
+                // 4. 返回成功结果
                 await context.RespondAsync(new SlotQueryResult
                 {
                     IsFound = true,

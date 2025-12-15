@@ -1,36 +1,41 @@
-﻿using SharedKernel.Domain;
-using System;
-using System.Collections.Generic;
-using System.Security.Principal;
-using System.Text;
+﻿using System.Collections.Generic;
 
 namespace AgingWms.Core.Domain
 {
-    /// <summary>
-    /// 1. 库位 (Warehouse Slot) - 聚合根
-    /// </summary>
-    public class WarehouseSlot : IEntity, IAggregateRoot
+    public class WarehouseSlot : ProcessingNode
     {
-        public WarehouseSlot()
+        public string? TrayBarcode { get; private set; }
+        public string SlotName { get; private set; }
+
+        // 【修复】这里使用你定义的 BatteryCell
+        public virtual ICollection<BatteryCell> Cells { get; private set; } = new List<BatteryCell>();
+
+        private WarehouseSlot()
         {
-            // 构造函数初始化，防止空指针
-            Cells = new List<BatteryCell>();
-            Status = SlotStatus.Empty;
         }
 
-        public string SlotId { get; set; }  // 主键 (如: "1-1-1")
+        public WarehouseSlot(string slotId, string slotName) : base(slotId)
+        {
+            SlotName = slotName;
+        }
 
-        // 适配 SharedKernel 的 IEntity 接口
-        public object Id => SlotId;
+        public void LoadTray(string trayCode)
+        {
+            TrayBarcode = trayCode;
+            UpdateStatus(SlotStatus.Occupied);
+        }
 
-        public string SlotName { get; set; }
-        public SlotStatus Status { get; set; }
-        public string TrayBarcode { get; set; }
-        public DateTime LastUpdatedTime { get; set; }
+        // 添加电芯到库位
+        public void AddCell(BatteryCell cell)
+        {
+            Cells.Add(cell);
+        }
 
-        // 【关键】N个电芯 - 实际上是存 JSON
-        public List<BatteryCell> Cells { get; set; }
-
-        public bool IsEmpty() => Cells == null || !Cells.Any();
+        public void Clear()
+        {
+            TrayBarcode = null;
+            Cells.Clear();
+            UpdateStatus(SlotStatus.Empty);
+        }
     }
 }

@@ -1,53 +1,55 @@
 ﻿using AutoMapper;
 using MassTransit;
-using SharedKernel.Dto;
+using SharedKernel.Dto; // 引用 OperationResult
 using SharedKernel.Workflow.Contracts;
-using System;
-using System.Collections.Generic;
-using System.Text;
+using System.Threading.Tasks;
 
 namespace AgingWms.Workflow.Services
 {
     public class AgingJobService
     {
-        private readonly IPublishEndpoint _publishEndpoint;
+        private readonly IBus _bus;
         private readonly IMapper _mapper;
 
-        public AgingJobService(IPublishEndpoint publishEndpoint, IMapper mapper)
+        public AgingJobService(IBus bus, IMapper mapper)
         {
-            _publishEndpoint = publishEndpoint;
+            _bus = bus;
             _mapper = mapper;
         }
 
-        /// <summary>
-        /// 发布老化任务 (Fire and Forget)
-        /// </summary>
-        public async Task StartJobAsync(AgingJobDto jobDto)
+        // 1. 启动任务 (Request/Response)
+        public async Task<OperationResult> StartJobAsync(AgingJobDto jobDto)
         {
-            if (jobDto == null) throw new ArgumentNullException(nameof(jobDto));
-
-            // 1. 使用 AutoMapper 自动转换为消息契约
-            // 彻底解耦：UI 的 DTO 变了，只需要改 Mapping，不需要改这里的逻辑
+            var client = _bus.CreateRequestClient<StartAgingJob>();
             var command = _mapper.Map<StartAgingJob>(jobDto);
-
-            // 2. 发布消息到总线
-            // MassTransit 会根据类型自动路由给 AgingJobStarterConsumer
-            await _publishEndpoint.Publish(command);
+            // 10秒超时
+            var response = await client.GetResponse<OperationResult>(command, timeout: RequestTimeout.After(s: 10));
+            return response.Message;
         }
 
-        public async Task PauseJobAsync(string slotId)
+        // 2. 暂停任务 (改为 Request/Response)
+        public async Task<OperationResult> PauseJobAsync(string slotId)
         {
-            await _publishEndpoint.Publish(new PauseAgingJob { SlotId = slotId });
+            var client = _bus.CreateRequestClient<PauseAgingJob>();
+            // 匿名对象自动匹配接口
+            var response = await client.GetResponse<OperationResult>(new { SlotId = slotId }, timeout: RequestTimeout.After(s: 10));
+            return response.Message;
         }
 
-        public async Task ResumeJobAsync(string slotId)
+        // 3. 恢复任务 (改为 Request/Response)
+        public async Task<OperationResult> ResumeJobAsync(string slotId)
         {
-            await _publishEndpoint.Publish(new ResumeAgingJob { SlotId = slotId });
+            var client = _bus.CreateRequestClient<ResumeAgingJob>();
+            var response = await client.GetResponse<OperationResult>(new { SlotId = slotId }, timeout: RequestTimeout.After(s: 10));
+            return response.Message;
         }
 
-        public async Task StopJobAsync(string slotId)
+        // 4. 停止任务 (改为 Request/Response)
+        public async Task<OperationResult> StopJobAsync(string slotId)
         {
-            await _publishEndpoint.Publish(new StopAgingJob { SlotId = slotId, Reason = "用户手动终止" });
+            var client = _bus.CreateRequestClient<StopAgingJob>();
+            var response = await client.GetResponse<OperationResult>(new { SlotId = slotId, Reason = "UI Manual Stop" }, timeout: RequestTimeout.After(s: 10));
+            return response.Message;
         }
     }
 }

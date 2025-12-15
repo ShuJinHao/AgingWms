@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Newtonsoft.Json;
 using System.Collections.Generic;
 
-namespace AgingWms.Infrastructure.Data.Configurations
+namespace AgingWms.Infrastructure.Data.Configurations // 确认你的命名空间
 {
     public class WarehouseSlotConfiguration : IEntityTypeConfiguration<WarehouseSlot>
     {
@@ -13,35 +13,35 @@ namespace AgingWms.Infrastructure.Data.Configurations
             // 1. 映射表名
             builder.ToTable("Wms_WarehouseSlots");
 
-            // 2. 设置主键
-            builder.HasKey(x => x.SlotId);
-            builder.Property(x => x.SlotId).HasMaxLength(64); // 根据实际长度调整
+            // 2. 设置主键 (修正点：SlotId -> Id)
+            builder.HasKey(x => x.Id);
+
+            // 如果你想保持数据库里的列名依然叫 "SlotId" (方便旧数据兼容)，可以加上 .HasColumnName
+            builder.Property(x => x.Id)
+                   .HasColumnName("SlotId") // 可选：保持数据库列名不变
+                   .HasMaxLength(64);
 
             // 3. 基础字段配置
             builder.Property(x => x.SlotName).HasMaxLength(100);
             builder.Property(x => x.TrayBarcode).HasMaxLength(100);
-            builder.Property(x => x.Status).IsRequired(); // Enum 默认存 int
 
-            // 4. 【核心】JSON 序列化配置
-            // 将 List<BatteryCell> 转换为 JSON 字符串存储
-            // 这样里面的 ProcessSteps 和 Metrics 都会自动包含在内
-            builder.Property(x => x.Cells)
-                .HasConversion(
-                    // 写入: 对象 -> JSON 字符串
-                    v => JsonConvert.SerializeObject(v, new JsonSerializerSettings
-                    {
-                        NullValueHandling = NullValueHandling.Ignore
-                    }),
+            // 映射基类 ProcessingNode 的字段
+            builder.Property(x => x.Status).IsRequired();
+            builder.Property(x => x.LastUpdatedTime);
+            builder.Property(x => x.RowVersion).IsRowVersion(); // 【高并发核心】乐观锁
 
-                    // 读取: JSON 字符串 -> 对象
-                    v => string.IsNullOrEmpty(v)
-                        ? new List<BatteryCell>()
-                        : JsonConvert.DeserializeObject<List<BatteryCell>>(v) ?? new List<BatteryCell>()
-                )
-                .HasColumnType("nvarchar(max)"); // SQL Server 大文本类型
+            // 4. 【架构升级】一对多关系配置 (替代原来的 JSON)
+            // 既然 Cell 是独立的处理节点，它应该存独立的表，这样才能支持电芯级的高并发锁
+            builder.HasMany(x => x.Cells)
+                   .WithOne()
+                   .HasForeignKey("WarehouseSlotId") // 对应 BatteryCell 里的外键属性
+                   .OnDelete(DeleteBehavior.Cascade); // 删除库位时，级联删除电芯
 
-            // 5. 忽略字段 (如果有不需要映射的字段，使用 .Ignore())
-            // builder.Ignore(x => x.SomeProperty);
+            // 5. 如果你确实想存 JSON (仅针对不需要查询/锁定的纯数据对象)
+            // 这里的 ProcessSteps 才是适合存 JSON 的地方，因为它不需要独立并发控制
+            // (注意：这里假设你在基类或子类里使用了 ExtensionDataJson)
+            builder.Property(x => x.ExtensionDataJson)
+                   .HasColumnType("nvarchar(max)");
         }
     }
 }

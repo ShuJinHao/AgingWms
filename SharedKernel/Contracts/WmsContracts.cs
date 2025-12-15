@@ -1,37 +1,44 @@
-﻿using SharedKernel.Dto;
-using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
+using SharedKernel.Dto; // 【关键】引用 DTO 命名空间，复用那里的 CellDto
 
 namespace SharedKernel.Contracts
 {
-    // 1. 保存/入库消息
-    public class SaveSlotData
+    // 1. 基础资源指令接口
+    public interface IResourceCommand
     {
-        public string SlotId { get; set; }
-        public string TrayBarcode { get; set; }
-        public DateTime OperationTime { get; set; }
-        public List<CellDto> Cells { get; set; } = new List<CellDto>();
+        string SlotId { get; }
     }
 
-    // 2. 移库消息
-    public class RelocateSlot
+    // 2. 保存/入库指令
+    public interface SaveSlotData : IResourceCommand
     {
-        public string SourceSlotId { get; set; }
-        public string TargetSlotId { get; set; }
+        string SlotId { get; }
+        string SlotName { get; }
+        string TrayCode { get; }
+        string DataJson { get; }
+
+        // 这里直接使用 SharedKernel.Dto.CellDto
+        List<CellDto> Cells { get; }
     }
 
-    // 3. 删除消息
-    public class ClearSlot
+    // 3. 移库指令
+    public interface RelocateSlot : IResourceCommand
     {
-        public string SlotId { get; set; }
+        string SlotId { get; }
+        string TargetSlotId { get; }
+    }
+
+    // 4. 清库指令 (保留之前的)
+    public interface ClearSlot : IResourceCommand
+    {
+        string SlotId { get; }
     }
 
     // ==========================================
-    // 1. 查询请求与响应
+    // 【关键修复】补充漏掉的查询契约
     // ==========================================
-
-    public class GetSlotQuery
+    public interface GetSlotQuery
     {
-        public string SlotId { get; set; }
+        string SlotId { get; }
     }
 }

@@ -1,8 +1,5 @@
 ﻿using AgingWms.Core.Domain;
 using Microsoft.EntityFrameworkCore;
-using Newtonsoft.Json;
-using System.Collections.Generic;
-using System.Reflection.Emit;
 
 namespace AgingWms.Infrastructure.Data
 {
@@ -12,38 +9,57 @@ namespace AgingWms.Infrastructure.Data
         {
         }
 
-        // 核心数据集：库位
-        public DbSet<WarehouseSlot> Slots { get; set; }
+        public DbSet<WarehouseSlot> WarehouseSlots { get; set; }
+        public DbSet<BatteryCell> BatteryCells { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
-            // 配置 WarehouseSlot 实体
+            // 1. 配置 WarehouseSlot
             modelBuilder.Entity<WarehouseSlot>(entity =>
             {
-                entity.ToTable("Wms_WarehouseSlots");
+                // 【关键修复】这里原来的 e.SlotId 必须改成 e.Id
+                entity.HasKey(e => e.Id);
 
-                // 设置主键
-                entity.HasKey(e => e.SlotId);
+                // 如果数据库里的列名还想保留叫 "SlotId"，可以用这一行映射回去：
+                // entity.Property(e => e.Id).HasColumnName("SlotId");
 
-                // 索引优化：经常要查状态和最后更新时间
-                entity.HasIndex(e => e.Status);
-                entity.HasIndex(e => e.LastUpdatedTime);
+                entity.Property(e => e.SlotName).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.TrayBarcode).HasMaxLength(50);
 
-                // 【关键策略】值转换器：将复杂的 Cells 对象列表映射为 JSON 字符串
-                entity.Property(e => e.Cells)
-                    .HasConversion(
-                        // 写入数据库时：对象 -> JSON
-                        v => JsonConvert.SerializeObject(v, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore }),
-                        // 从数据库读取时：JSON -> 对象
-                        v => JsonConvert.DeserializeObject<List<BatteryCell>>(v) ?? new List<BatteryCell>()
-                    )
-                    // SQL Server 中使用 NVARCHAR(MAX) 存储大文本
-                    .HasColumnType("nvarchar(max)");
+                // 映射基类属性
+                entity.Property(e => e.Status);
+                entity.Property(e => e.LastUpdatedTime);
+                entity.Property(e => e.RowVersion).IsRowVersion(); // 乐观锁
 
-                // 并发控制 (可选，防止两个人同时修改同一个库位)
-                entity.Property(e => e.LastUpdatedTime).IsConcurrencyToken();
+                // 配置与电芯的一对多关系
+                entity.HasMany(e => e.Cells)
+                      .WithOne()
+                      .HasForeignKey(c => c.WarehouseSlotId);
+            });
+
+            // 2. 配置 BatteryCell
+            modelBuilder.Entity<BatteryCell>(entity =>
+            {
+                // 【关键修复】这里也要用 Id (对应原来的 Barcode)
+                entity.HasKey(e => e.Id);
+
+                // 如果你想让数据库列名更直观，可以映射一下：
+                // entity.Property(e => e.Id).HasColumnName("Barcode");
+
+                entity.Property(e => e.ChannelIndex);
+                entity.Property(e => e.IsNg);
+
+                // 映射基类属性
+                entity.Property(e => e.Status);
+                entity.Property(e => e.LastUpdatedTime);
+                entity.Property(e => e.RowVersion).IsRowVersion();
+
+                // 配置忽略 ProcessSteps (因为它是一个 List 对象，SQL 存不下，或者需要转 JSON 存)
+                // 如果你之前是用 OwnsMany 存的，保留之前的写法；
+                // 如果仅仅是内存对象，不想存数据库，就 Ignore 掉：
+                entity.Ignore(e => e.ProcessSteps);
             });
         }
     }
