@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/frontend/">
+    <Project Path="AgingWms.Client/AgingWms.Client.csproj" />
+  </Folder>
+  <Folder Name="/shared/">
+    <Project Path="SharedKernel/SharedKernel.csproj" />
+  </Folder>
+  <Folder Name="/wms/">
+    <Project Path="AgingWms.Core/AgingWms.Core.csproj" />
+    <Project Path="AgingWms.Infrastructure/AgingWms.Infrastructure.csproj" />
+    <Project Path="AgingWms.UseCases/AgingWms.UseCases.csproj" />
+    <Project Path="AgingWms.Workflow/AgingWms.Workflow.csproj" Id="a9e9dc3b-6a18-41b3-8670-114d7d9d06f6" />
+  </Folder>
+</Solution>
