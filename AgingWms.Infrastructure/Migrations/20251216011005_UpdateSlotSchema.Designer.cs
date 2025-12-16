@@ -4,6 +4,7 @@ using AgingWms.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace AgingWms.Infrastructure.Migrations
 {
     [DbContext(typeof(AgingWmsDbContext))]
-    partial class AgingWmsDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251216011005_UpdateSlotSchema")]
+    partial class UpdateSlotSchema
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

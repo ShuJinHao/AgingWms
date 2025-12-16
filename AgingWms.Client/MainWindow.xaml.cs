@@ -1,5 +1,6 @@
 ﻿using AgingWms.Client;
-using AgingWms.UseCases.Services;
+using AgingWms.UseCases.Services.Notify;
+using AgingWms.UseCases.Services.Request;
 using AgingWms.Workflow.Services; // 【核心修复】必须引用这个，否则找不到 AgingJobService
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,22 +18,22 @@ namespace AgingWms.Client
 {
     public partial class MainWindow : Window
     {
-        private readonly IBus _bus;
         private readonly RealTimeMonitorService _monitorService;
         private readonly IServiceScopeFactory _scopeFactory;
-
+        private readonly WmsRequestService _wmsService;
         public ObservableCollection<SlotMonitorViewModel> MonitorList { get; set; }
 
         public MainWindow(
-            IBus bus,
-            RealTimeMonitorService monitorService,
-            IServiceScopeFactory scopeFactory)
+             RealTimeMonitorService monitorService,
+             IServiceScopeFactory scopeFactory,
+             // 【注入】构造函数直接注入，不要再去 GetRequiredService 了
+             WmsRequestService wmsService)
         {
             InitializeComponent();
 
-            _bus = bus;
             _monitorService = monitorService;
             _scopeFactory = scopeFactory;
+            _wmsService = wmsService; // 【赋值】
 
             MonitorList = new ObservableCollection<SlotMonitorViewModel>();
             dgMonitor.ItemsSource = MonitorList;
@@ -86,32 +87,25 @@ namespace AgingWms.Client
         // =============================================================
         // 按钮逻辑：WMS 操作
         // =============================================================
+        // 1. 批量入库
+        // 1. 批量入库
         private async void btnWrite_Click(object sender, RoutedEventArgs e)
         {
             var ids = GetBatchSlotIds();
             Log($"[开始] 批量入库 {ids.Count} 个...");
-
-            var client = _bus.CreateRequestClient<SaveSlotData>();
 
             foreach (var id in ids)
             {
                 try
                 {
                     if (!int.TryParse(txtCellCount.Text, out int cCount)) cCount = 24;
-                    // 【注意】这里必须传入 id 防止主键冲突
                     var cells = CreateMockCells(cCount, id);
                     string trayCode = $"{txtTrayCode.Text}_{id}";
 
-                    var response = await client.GetResponse<OperationResult>(new
-                    {
-                        SlotId = id,
-                        SlotName = id,
-                        TrayCode = trayCode,
-                        Cells = cells,
-                        DataJson = ""
-                    });
+                    // 直接使用注入的服务成员变量
+                    var result = await _wmsService.WriteSlotAsync(id, trayCode, cells);
 
-                    if (response.Message.IsSuccess)
+                    if (result.IsSuccess)
                     {
                         Log($" -> 写入 {id} 成功");
                         var vm = GetOrAddViewModel(id);
@@ -120,58 +114,54 @@ namespace AgingWms.Client
                     }
                     else
                     {
-                        Log($" -> 写入 {id} 失败: {response.Message.Message}");
+                        Log($" -> 写入 {id} 失败: {result.Message}");
                     }
                 }
                 catch (Exception ex) { Log($"异常: {ex.Message}"); }
             }
         }
 
+        // 2. 库位迁移
         private async void btnMove_Click(object sender, RoutedEventArgs e)
         {
+            string src = txtSlotId.Text.Trim();
+            string tgt = txtTargetSlotId.Text.Trim();
+
             try
             {
-                string src = txtSlotId.Text.Trim();
-                string tgt = txtTargetSlotId.Text.Trim();
+                // 直接调用，没有 Scope
+                var result = await _wmsService.MoveSlotAsync(src, tgt);
 
-                var client = _bus.CreateRequestClient<RelocateSlot>();
-                var response = await client.GetResponse<OperationResult>(new { SlotId = src, TargetSlotId = tgt });
+                Log(result.IsSuccess ? $"[成功] {result.Message}" : $"[失败] {result.Message}");
 
-                Log(response.Message.IsSuccess ? $"[成功] {response.Message.Message}" : $"[失败] {response.Message.Message}");
-
-                if (response.Message.IsSuccess)
+                if (result.IsSuccess)
                 {
-                    // 1. 找到源 VM
                     var srcVm = MonitorList.FirstOrDefault(x => x.SlotId == src);
-
-                    // 【核心修复】先保存托盘码，再移除
                     string movingTray = srcVm?.TrayBarcode ?? "Unknown";
-
-                    // 2. 移除源
                     if (srcVm != null) MonitorList.Remove(srcVm);
 
-                    // 3. 更新目标
                     var tgtVm = GetOrAddViewModel(tgt);
                     tgtVm.Status = "占用";
-                    tgtVm.TrayBarcode = movingTray; // 【修复】把托盘码赋值过去
+                    tgtVm.TrayBarcode = movingTray;
                 }
             }
             catch (Exception ex) { Log($"[异常] {ex.Message}"); }
         }
 
+        // 3. 库位移除
         private async void btnRemove_Click(object sender, RoutedEventArgs e)
         {
             var ids = GetBatchSlotIds();
-            var client = _bus.CreateRequestClient<ClearSlot>();
 
             foreach (var id in ids)
             {
                 try
                 {
-                    var response = await client.GetResponse<OperationResult>(new { SlotId = id });
-                    Log($"移除 {id}: {response.Message.Message}");
+                    // 直接调用
+                    var result = await _wmsService.RemoveSlotAsync(id);
+                    Log($"移除 {id}: {result.Message}");
 
-                    if (response.Message.IsSuccess)
+                    if (result.IsSuccess)
                     {
                         var vm = MonitorList.FirstOrDefault(x => x.SlotId == id);
                         if (vm != null) MonitorList.Remove(vm);
@@ -319,34 +309,57 @@ namespace AgingWms.Client
             return list;
         }
 
+        // =============================================================
+        // 1. 实时遥测处理 (更新: 电压/电流/时间/真实工步名)
+        // =============================================================
         private void OnTelemetryReceived(SlotTelemetryEvent e)
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
                 var vm = GetOrAddViewModel(e.SlotId);
-                // 更新电压电流
+
+                // 电气参数
                 vm.Voltage = e.Voltage;
                 vm.Current = e.Current;
-                // 【补全】更新温度和容量
                 vm.Temperature = e.Temperature;
                 vm.Capacity = e.Capacity;
+
+                // 【核心修复】工步名称以 Telemetry 为准 (这是真理)
+                // 只要设备传来了工步名，就立刻刷新 UI，不管数据库里是啥
+                if (!string.IsNullOrEmpty(e.CurrentStepName))
+                {
+                    vm.CurrentStep = e.CurrentStepName;
+                }
+
+                // 【核心修复】更新运行时间 DurationInfo
+                // 格式化 TimeSpan 为 "HH:mm:ss"
+                string timeStr = e.RunDuration.ToString(@"hh\:mm\:ss");
+                vm.DurationInfo = timeStr;
+                // 如果你想显示总时间，可以拼字符串: $"{timeStr} / 60min" (需从别处获取总时间)
             });
         }
 
+        // =============================================================
+        // 2. 工步状态处理 (更新: 状态/进度条/消息)
+        // =============================================================
         private void OnStepStateReceived(SlotStepStateEvent e)
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
                 var vm = GetOrAddViewModel(e.SlotId);
 
-                // 更新基础信息
-                vm.CurrentStep = e.StepName;
+                // 更新消息
                 vm.Message = e.Message;
 
-                // 【核心修复 A】必须赋值进度条，否则界面一直是灰的
-                vm.Progress = e.ProgressPercent;
+                // 【核心修复】更新进度条 Progress
+                // 只有当进度 > 0 或者 是明确的开始/结束事件时才更新
+                // 这样避免了 "恢复" 事件(通常进度为0) 把界面清零
+                if (e.ProgressPercent > 0 || e.EventType == StepEventType.Started || e.EventType == StepEventType.Completed)
+                {
+                    vm.Progress = e.ProgressPercent;
+                }
 
-                // 【核心修复 B】增加 Resumed (恢复) 和 Completed (完成) 的状态判断
+                // 更新状态文字
                 switch (e.EventType)
                 {
                     case StepEventType.Started:
@@ -357,8 +370,10 @@ namespace AgingWms.Client
                         vm.Status = "暂停";
                         break;
 
-                    case StepEventType.Resumed: // 之前漏了这个，导致恢复后状态文字没变
+                    case StepEventType.Resumed:
                         vm.Status = "执行中";
+                        // 恢复时，如果 Telemetry 还没来，暂时沿用数据库里的名，或者显示默认
+                        // 但 OnTelemetryReceived 马上会覆盖它，所以这里不用太纠结
                         break;
 
                     case StepEventType.Faulted:
@@ -367,11 +382,7 @@ namespace AgingWms.Client
 
                     case StepEventType.Completed:
                         vm.Status = "已完成";
-                        vm.Progress = 100; // 强制进度满格
-                        break;
-
-                    default:
-                        vm.Status = e.EventType.ToString();
+                        vm.Progress = 100;
                         break;
                 }
             });

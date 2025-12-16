@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace AgingWms.UseCases.Services
+namespace AgingWms.UseCases.Services.DB
 {
     public class SlotCommandService : ResourceControlService<WarehouseSlot>
     {

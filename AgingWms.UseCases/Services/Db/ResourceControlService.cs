@@ -4,7 +4,7 @@ using SharedKernel.Repositoy;
 using System;
 using System.Threading.Tasks;
 
-namespace AgingWms.UseCases.Services
+namespace AgingWms.UseCases.Services.DB
 {
     public class ResourceControlService<T> where T : ProcessingNode
     {

@@ -1,10 +1,10 @@
 ﻿using AgingWms.Core.Domain;
-using AgingWms.UseCases.Services;
 using MassTransit;
 using SharedKernel.Contracts;
 using SharedKernel.Dto; // 引用 OperationResult
 using System.Threading.Tasks;
 using System;
+using AgingWms.UseCases.Services.DB;
 
 namespace AgingWms.UseCases.Consumers.Wms.Commands
 {

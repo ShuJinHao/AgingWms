@@ -1,4 +1,4 @@
-﻿using AgingWms.UseCases.Services;
+﻿using AgingWms.UseCases.Services.Notify;
 using MassTransit;
 using SharedKernel.Contracts;
 using System.Threading.Tasks;

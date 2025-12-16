@@ -3,7 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace AgingWms.UseCases.Services
+namespace AgingWms.UseCases.Services.Notify
 {
     // 单例服务：负责将 MassTransit 的消息转发给 UI
     public class RealTimeMonitorService

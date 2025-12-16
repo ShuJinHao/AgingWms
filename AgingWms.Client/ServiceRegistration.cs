@@ -4,7 +4,9 @@ using AgingWms.Infrastructure.Repositories;
 using AgingWms.UseCases.Consumers.Wms.Commands;
 using AgingWms.UseCases.Consumers.Wms.Queries;
 using AgingWms.UseCases.Mappings;
-using AgingWms.UseCases.Services;
+using AgingWms.UseCases.Services.DB;
+using AgingWms.UseCases.Services.Notify;
+using AgingWms.UseCases.Services.Request;
 using AgingWms.Workflow.Consumers; // 确保引用了这个
 using AgingWms.Workflow.Services;
 using AgingWms.Workflow.Workflows;
@@ -35,6 +37,8 @@ namespace AgingWms.Client
             // 3. 业务服务 (确保 SlotCommandService 在这里!)
             services.AddScoped<ResourceControlService<WarehouseSlot>>();
             services.AddScoped<ResourceControlService<BatteryCell>>();
+
+            services.AddScoped<WmsRequestService>();
 
             // 【关键】注册 SlotCommandService
             services.AddScoped<SlotCommandService>();

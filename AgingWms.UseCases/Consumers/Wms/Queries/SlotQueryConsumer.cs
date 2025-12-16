@@ -1,5 +1,5 @@
 ﻿using AgingWms.Core.Domain;
-using AgingWms.UseCases.Services;
+using AgingWms.UseCases.Services.DB;
 using AutoMapper;
 using MassTransit;
 using SharedKernel.Contracts;
