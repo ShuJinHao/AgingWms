@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>锂电池老化 WMS 控制系统 - 软件架构 (无MQ版)</title>
+    <style>
+        :root {
+            --primary-color: #0078D4;
+            --success-color: #107C10;
+            --warning-color: #D83B01;
+            --bg-color: #f9f9f9;
+            --card-bg: #ffffff;
+        }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            color: #333;
+            background-color: var(--bg-color);
+            padding: 20px;
+        }
+
+        .container { max-width: 1000px; margin: 0 auto; }
+        h1 { text-align: center; color: #333; }
+        h2 { border-bottom: 2px solid var(--primary-color); padding-bottom: 5px; margin-top: 30px; }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .diagram {
+            background: #2b2b2b;
+            color: #f0f0f0;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Consolas', monospace;
+            overflow-x: auto;
+            white-space: pre;
+            line-height: 1.4;
+        }
+
+        .tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: bold;
+            color: white;
+            margin-left: 10px;
+        }
+        .tag-done { background-color: var(--success-color); }
+        .tag-todo { background-color: var(--warning-color); }
+
+        ul { padding-left: 20px; }
+        li { margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>软件架构说明书 (基于 MassTransit 内存总线)</h1>
+
+    <div class="card">
+        <h2>1. 核心骨干逻辑 (Request/Response)</h2>
+        <p>系统不依赖外部 MQ 中间件，采用 <strong>MassTransit (In-Memory)</strong> 实现进程内的高性能解耦通信。通过 Request/Response 模式实现类似 HTTP 的异步调用体验，但由 EF Core 承载所有数据持久化。</p>
+        
+        <div class="diagram">
+[UI 客户端 / WPF]                      [内存总线 / MassTransit In-Memory]         [后端消费者 / Consumers]
+       |                                       |                                        |
+ 1. 按钮点击 (Click)                           |                                        |
+       |                                       |                                        |
+ 2. WmsRequestService (Facade)                 |                                        |
+    await client.GetResponse(...)     ------>  |  (直接内存路由，无MQ延迟)                |
+       |                                       | -----------------------------------> 3. AgingJobConsumer
+       | (UI线程释放，去处理动画)                  |                                        |    a. 接收指令
+       |                                       |                                        |    b. [EF Core] 开启事务
+       |                                       |                                        |    c. [SQL Server] 写入状态/工步
+       |                                       |                                        |    d. [Workflow] 驱动业务
+       |                                       | <-----------------------------------   e. 返回结果 (Result)
+       | <------------------------------------ |                                        |
+ 3. 收到响应 (Task Complete)                   |                                        |
+    刷新 UI 列表                                |                                        |
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>2. 当前架构优势 (无MQ模式)</h2>
+        <ul>
+            <li><strong>轻量化部署：</strong>不需要安装 RabbitMQ/ActiveMQ 等重型服务，软件只是一个纯净的 .NET 进程 + SQL Server 数据库。</li>
+            <li><strong>低延迟 (Low Latency)：</strong>由于走的是内存总线，没有网络序列化和传输开销，指令响应速度极快（微秒级）。</li>
+            <li><strong>高并发非阻塞：</strong>利用 .NET 的 TAP (Task) 机制，UI 发起请求后立即释放线程。消费者端通过 EF Core 连接池处理并发数据库操作，不会卡死界面。</li>
+            <li><strong>强一致性：</strong>状态完全由 SQL Server 保证，没有“MQ 丢消息”或“MQ 与 数据库不一致”的风险。</li>
+        </ul>
+    </div>
+
+    <div class="card">
+        <h2>3. 已完成模块 (Implemented) <span class="tag tag-done">已完成</span></h2>
+        <p>以下功能代码已编写完毕并调试通过：</p>
+        <ul>
+            <li><strong>门面服务 (WmsRequestService)：</strong> 封装了对 MassTransit 的调用，UI 层只调用 <code>WriteSlotAsync</code> 等方法，完全隔离底层通信细节。</li>
+            <li><strong>请求/响应流程：</strong> 实现了入库、移库、清库的完整闭环，前端等待后端处理完数据库后才提示成功。</li>
+            <li><strong>流程控制消费者：</strong> <code>Start</code>, <code>Pause</code>, <code>Resume</code>, <code>Stop</code> 消费者逻辑已跑通，并能正确更新 SQL 状态。</li>
+            <li><strong>Telemetry 实时看板：</strong> UI 通过订阅 <code>SlotTelemetryEvent</code>，实时显示电压、电流及<strong>真实的工步名称</strong>（不依赖消费者猜测）。</li>
+            <li><strong>数据库管理：</strong> <code>WarehouseSlot</code> 实体已包含 <code>CurrentStep</code> 和 <code>LastUpdateTime</code>，支持 EF Core 增量更新。</li>
+        </ul>
+    </div>
+
+    <div class="card" style="border-left: 5px solid #D83B01;">
+        <h2>4. 待实施规划 (Future Plan) <span class="tag tag-todo">未开始</span></h2>
+        <p>以下功能属于“灾备恢复”范畴，目前尚未编写代码：</p>
+        <ul>
+            <li><strong>启动自检服务 (RecoveryService)：</strong> 软件启动时扫描 SQL 中 <code>Running</code> 的任务，并计算宕机时长。</li>
+            <li><strong>断点续传逻辑：</strong> 在 <code>Resume</code> 时从数据库读取之前保存的配方参数（Steps JSON），重新挂载工作流线程。</li>
+            <li><strong>时长补偿策略：</strong> 针对宕机超过 5 分钟的情况，自动延长当前工步时间。</li>
+        </ul>
+    </div>
+
+</div>
+
+</body>
+</html>

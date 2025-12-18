@@ -73,6 +73,18 @@ namespace AgingWms.Client
                 {
                     cfg.UseNewtonsoftJsonSerializer();
                     cfg.UseNewtonsoftJsonDeserializer();
+                    // 【关键】配置重试策略
+                    // 意思就是：如果遇到数据库并发冲突（DbUpdateConcurrencyException），
+                    // 不要抛出到主程序导致崩溃，而是休息一下，重新执行一遍 Consume 方法。
+                    cfg.UseMessageRetry(r =>
+                    {
+                        // 专门捕获 EF Core 的并发异常
+                        r.Handle<Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException>();
+
+                        // 重试 5 次，每次间隔 100毫秒（用户根本感觉不到）
+                        r.Interval(5, 100);
+                    });
+
                     cfg.ConfigureEndpoints(context);
                 });
             });
